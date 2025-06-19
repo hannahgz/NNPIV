@@ -360,12 +360,7 @@ class DML_longterm_seq:
         omega = np.mean(KK,axis=0)   
         ell = KK/omega
         return ell.reshape(-1,1)
-
-    # Write a calculate bridge_1_d and bridge_2_d
-    # takes in parameters of d (discrete treatment, not just 1 or 0, not binary)
-    # return bridge_1_d, bridge_2_d
     
-    # Expectation of potential outcome
     def _nnpivfit_outcome_latent(self, Y, D, S, X, G):
         """
         Fit the outcome model using the latent unconfounded framework.
@@ -377,13 +372,13 @@ class DML_longterm_seq:
         Y : array-like
             Outcome variable.
         D : array-like
-            Treatment variable.  not sure if this is binary or not, process fold can be modified easily, y1, y2, y3, y4, y5, up to yd
+            Treatment variable.
         S : array-like
             Surrogate variable.
         X : array-like
             Covariates.
         G : array-like
-            Group indicator. getting clarification on what is G?
+            Group indicator.
 
         Returns
         -------
@@ -391,12 +386,6 @@ class DML_longterm_seq:
             Fitted models for treatment and control groups.
         """
         if self.estimator == 'MR' or self.estimator == 'OR' or self.estimator == 'hybrid':
-            model_1_arr = []
-            model_2_arr = []
-            for index, d in enumerate(D):
-                model_1_arr.append(copy.deepcopy(self.model1))
-                model_2_arr.append(copy.deepcopy(self.model2))
-
             model_1_d1 = copy.deepcopy(self.model1)
             model_1_d0 = copy.deepcopy(self.model1)
             model_2_d1 = copy.deepcopy(self.model2)
@@ -406,26 +395,7 @@ class DML_longterm_seq:
             if self.nn_1 == True:
                 Y, D, S, X, G = map(lambda x: torch.Tensor(x), [Y, D, S, X, G]) 
 
-            S1_arr = []
-            X1_arr = []
-            Y1_arr = []
-            A1_arr = []
-            for index, d in enumerate(D):
-                ind = np.where(np.logical_and(G == 1, D == d))[0] # indicator variable
-                S1_arr.append(S[ind])
-                X1_arr.append(X[ind, :])
-                Y1_arr.append(Y[ind])
-
-                if self.nn_1 == True:
-                    A1_arr[index] = torch.cat((S1_arr[index], X1_arr[index]), 1)
-                else:
-                    A1_arr[index] = _transform_poly(np.column_stack((S1_arr[index], X1_arr[index])), self.opts)
-
-                if self.fitargs1 is not None:
-                    bridge_1_arr[index] = model_1_arr[index].fit(A1_arr[index], A1_arr[index], Y1_arr[index], **self.fitargs1)
-                else:
-                    bridge_1_arr[index] = model_1_arr.fit(A1_arr[index], A1_arr[index], Y1_arr[index])
-            ind = np.where(np.logical_and(G == 1, D == 1))[0] # splitting sample between D = 1, just split for D = 1, 2, 3, 4, .... 
+            ind = np.where(np.logical_and(G == 1, D == 1))[0]
             S1_1 = S[ind]
             X1_1 = X[ind, :]
             Y1_1 = Y[ind]
@@ -473,7 +443,7 @@ class DML_longterm_seq:
                 else:
                     D, X, G, bridge_1_d1_hat, bridge_1_d0_hat = map(lambda x: torch.Tensor(x), [D, X, G, bridge_1_d1_hat, bridge_1_d0_hat])
 
-            ind_1 = np.where(np.logical_and(G == 0, D == 1))[0] # this only applies to the latent, but not in surrogacy
+            ind_1 = np.where(np.logical_and(G == 0, D == 1))[0]
             ind_0 = np.where(np.logical_and(G == 0, D == 0))[0]
             X0_1 = X[ind_1, :]
             bridge_1_d1_hat = bridge_1_d1_hat[ind_1]
@@ -551,9 +521,6 @@ class DML_longterm_seq:
             else:
                 # print("Transforming data with polynomial features...")
                 A1 = _transform_poly(np.column_stack((S1, X1)), self.opts)
-
-            # print(f"A1 shape: {A1.shape}")
-            # print(f"Y1 shape: {Y1.shape}")
             
             if self.fitargs1 is not None:
                 bridge_1 = model_1.fit(A1, A1, Y1, **self.fitargs1)
@@ -619,35 +586,6 @@ class DML_longterm_seq:
         
         # print("reached return")
         return bridge_1, bridge_2_d_ind
-    
-    # # QUESTIONS
-    # """
-    # 1. Modify the two methods Isaac suggested nnpiv
-    # 2. Propensity score, modification not as straightfoward
-    # """
-    # def _compute_discrete_EY(self, Y, D, S, X, G, d_values):
-    #     E_Y_d = {}
-    #     for d in d_values:
-    #         # Filter data for the current treatment level
-    #         D_current = (D == d).astype(float)
-
-    #         # Fit the outcome model for the current treatment level
-    #         if self.longterm_model == 'latent_unconfounded':
-    #             bridge_1, bridge_2 = self._nnpivfit_outcome_latent(Y, D_current, S, X, G)
-    #         else:
-    #             bridge_1, bridge_2 = self._nnpivfit_outcome_surrogacy(Y, D_current, S, X, G)
-            
-    #         # Predict E{Y(d)} using the second-stage model
-    #         if self.nn_2:
-    #             A_test = torch.Tensor(X).to(device)
-    #             Y_pred = bridge_2.predict(A_test, model='avg').cpu().numpy()
-    #         else:
-    #             A_test = _transform_poly(X, self.opts)
-    #             Y_pred = bridge_2.predict(A_test)
-
-    #         # Take the mean prediction for E{Y(d)}
-    #         E_Y_d[d] = Y_pred.mean()
-    #     return E_Y_d
 
 
     def _propensity_score_latent(self, S_train, X_train, D_train, G_train,
@@ -804,13 +742,7 @@ class DML_longterm_seq:
             self.progress_bar.update(1)
 
         return nu_d_discrete_hat
-    
-    # QUESTIONS
-    """
-    1. Difference between using neural net vs not using?
-    2. Is bridge 1 being used?
-    3. Should I make a new method?
-    """
+
 
     def _split_and_estimate(self, d_discrete):
         """
