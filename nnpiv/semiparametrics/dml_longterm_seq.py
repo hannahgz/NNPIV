@@ -138,7 +138,7 @@ class DML_longterm_seq:
     X1 : array-like, optional
         Additional covariates.
     V : array-like, optional
-        Localization covariates.
+        Localization covariates. (you have overall treatment effect, can further partition this effect into effect by covariates, partition treatment effect into age groups, instead of subsamples, kernel around age that you're interested in, like a weighting variable)
     v_values : array-like, optional
         Values for localization.
     ci_type : str, optional
@@ -190,11 +190,11 @@ class DML_longterm_seq:
                  longterm_model='surrogacy',
                  model1=ApproxRKHSIVCV(kernel_approx='nystrom', n_components=100,
                            kernel='rbf', gamma=.1, delta_scale='auto',
-                           delta_exp=.4, alpha_scales=np.geomspace(1, 10000, 10), cv=5), 
+                           delta_exp=.4, alpha_scales=np.geomspace(1, 10000, 10), cv=5), # observational, to test code, use a linear regression instead from skicit learn so it'll go a lot faster
                  nn_1=False,
                  model2=ApproxRKHSIVCV(kernel_approx='nystrom', n_components=100,
                            kernel='rbf', gamma=.1, delta_scale='auto',
-                           delta_exp=.4, alpha_scales=np.geomspace(1, 10000, 10), cv=5), 
+                           delta_exp=.4, alpha_scales=np.geomspace(1, 10000, 10), cv=5), #experimental
                  nn_2=False,
                  alpha=0.05,
                  n_folds=5,
@@ -307,7 +307,7 @@ class DML_longterm_seq:
             Lower and upper bounds of the confidence intervals.
         """
         n = self.Y.shape[0]
-
+        print(f"Calculating confidence intervals with n={n}, alpha={self.alpha}, ci_type={self.ci_type}")
         if self.ci_type == 'pointwise':
             z_alpha_half = norm.ppf(1 - self.alpha / 2)
             margin_of_error = z_alpha_half * np.sqrt(theta_var / n) 
@@ -361,6 +361,11 @@ class DML_longterm_seq:
         ell = KK/omega
         return ell.reshape(-1,1)
 
+    # Write a calculate bridge_1_d and bridge_2_d
+    # takes in parameters of d (discrete treatment, not just 1 or 0, not binary)
+    # return bridge_1_d, bridge_2_d
+    
+    # Expectation of potential outcome
     def _nnpivfit_outcome_latent(self, Y, D, S, X, G):
         """
         Fit the outcome model using the latent unconfounded framework.
@@ -372,13 +377,13 @@ class DML_longterm_seq:
         Y : array-like
             Outcome variable.
         D : array-like
-            Treatment variable.
+            Treatment variable.  not sure if this is binary or not, process fold can be modified easily, y1, y2, y3, y4, y5, up to yd
         S : array-like
             Surrogate variable.
         X : array-like
             Covariates.
         G : array-like
-            Group indicator.
+            Group indicator. getting clarification on what is G?
 
         Returns
         -------
@@ -386,6 +391,12 @@ class DML_longterm_seq:
             Fitted models for treatment and control groups.
         """
         if self.estimator == 'MR' or self.estimator == 'OR' or self.estimator == 'hybrid':
+            model_1_arr = []
+            model_2_arr = []
+            for index, d in enumerate(D):
+                model_1_arr.append(copy.deepcopy(self.model1))
+                model_2_arr.append(copy.deepcopy(self.model2))
+
             model_1_d1 = copy.deepcopy(self.model1)
             model_1_d0 = copy.deepcopy(self.model1)
             model_2_d1 = copy.deepcopy(self.model2)
@@ -395,7 +406,26 @@ class DML_longterm_seq:
             if self.nn_1 == True:
                 Y, D, S, X, G = map(lambda x: torch.Tensor(x), [Y, D, S, X, G]) 
 
-            ind = np.where(np.logical_and(G == 1, D == 1))[0]
+            S1_arr = []
+            X1_arr = []
+            Y1_arr = []
+            A1_arr = []
+            for index, d in enumerate(D):
+                ind = np.where(np.logical_and(G == 1, D == d))[0] # indicator variable
+                S1_arr.append(S[ind])
+                X1_arr.append(X[ind, :])
+                Y1_arr.append(Y[ind])
+
+                if self.nn_1 == True:
+                    A1_arr[index] = torch.cat((S1_arr[index], X1_arr[index]), 1)
+                else:
+                    A1_arr[index] = _transform_poly(np.column_stack((S1_arr[index], X1_arr[index])), self.opts)
+
+                if self.fitargs1 is not None:
+                    bridge_1_arr[index] = model_1_arr[index].fit(A1_arr[index], A1_arr[index], Y1_arr[index], **self.fitargs1)
+                else:
+                    bridge_1_arr[index] = model_1_arr.fit(A1_arr[index], A1_arr[index], Y1_arr[index])
+            ind = np.where(np.logical_and(G == 1, D == 1))[0] # splitting sample between D = 1, just split for D = 1, 2, 3, 4, .... 
             S1_1 = S[ind]
             X1_1 = X[ind, :]
             Y1_1 = Y[ind]
@@ -443,7 +473,7 @@ class DML_longterm_seq:
                 else:
                     D, X, G, bridge_1_d1_hat, bridge_1_d0_hat = map(lambda x: torch.Tensor(x), [D, X, G, bridge_1_d1_hat, bridge_1_d0_hat])
 
-            ind_1 = np.where(np.logical_and(G == 0, D == 1))[0]
+            ind_1 = np.where(np.logical_and(G == 0, D == 1))[0] # this only applies to the latent, but not in surrogacy
             ind_0 = np.where(np.logical_and(G == 0, D == 0))[0]
             X0_1 = X[ind_1, :]
             bridge_1_d1_hat = bridge_1_d1_hat[ind_1]
@@ -470,7 +500,7 @@ class DML_longterm_seq:
         
         return bridge_1_d1, bridge_1_d0, bridge_2_d1, bridge_2_d0
 
-    def _nnpivfit_outcome_surrogacy(self, Y, D, S, X, G):
+    def _nnpivfit_outcome_surrogacy(self, Y, D, S, X, G, D_ind):
         """
         Fit the outcome model using the surrogacy framework.
 
@@ -488,31 +518,43 @@ class DML_longterm_seq:
             Covariates.
         G : array-like
             Group indicator.
+        D_ind : int
+            Value of the discrete treatment variable to fit the model for.
 
         Returns
         -------
         tuple
             Fitted models for the outcome.
         """
+        # print("Fitting outcome model with surrogacy assumption...")
         if self.estimator == 'MR' or self.estimator == 'OR' or self.estimator == 'hybrid':
             model_1 = copy.deepcopy(self.model1)
-            model_2_d1 = copy.deepcopy(self.model2)
-            model_2_d0 = copy.deepcopy(self.model2)
+            model_2_d_ind = copy.deepcopy(self.model2)
+            # model_2_d1 = copy.deepcopy(self.model2)
+            # model_2_d0 = copy.deepcopy(self.model2)
 
             # First stage in observational data
             if self.nn_1 == True:
                 Y, D, S, X, G = map(lambda x: torch.Tensor(x), [Y, D, S, X, G]) 
 
-            ind = np.where(G == 1)[0]
+            # print("Fitting first stage model...")
+            # ind = np.where(G == 1)[0]
+            ind = np.where((G == 1) & (D == D_ind))[0]
+            # print(f"Shape of S: {S.shape}, X: {X.shape}, Y: {Y.shape}, G: {G.shape}")
             S1 = S[ind]
             X1 = X[ind, :]
             Y1 = Y[ind]
+            print(f"Shape of S1: {S1.shape}, X1: {X1.shape}, Y1: {Y1.shape}")
 
             if self.nn_1 == True:
                 A1 = torch.cat((S1, X1), 1)
             else:
+                # print("Transforming data with polynomial features...")
                 A1 = _transform_poly(np.column_stack((S1, X1)), self.opts)
 
+            # print(f"A1 shape: {A1.shape}")
+            # print(f"Y1 shape: {Y1.shape}")
+            
             if self.fitargs1 is not None:
                 bridge_1 = model_1.fit(A1, A1, Y1, **self.fitargs1)
             else:
@@ -537,32 +579,76 @@ class DML_longterm_seq:
                 else:
                     D, X, G, bridge_1_hat = map(lambda x: torch.Tensor(x), [D, X, G, bridge_1_hat])
 
-            ind_1 = np.where(np.logical_and(G == 0, D == 1))[0]
-            ind_0 = np.where(np.logical_and(G == 0, D == 0))[0]
-            X0_1 = X[ind_1, :]
-            bridge_1_hat_1 = bridge_1_hat[ind_1]
-            X0_0 = X[ind_0, :]
-            bridge_1_hat_0 = bridge_1_hat[ind_0]
+            # ind_1 = np.where(np.logical_and(G == 0, D == 1))[0]
+            # ind_0 = np.where(np.logical_and(G == 0, D == 0))[0]
+            # X0_1 = X[ind_1, :]
+            # bridge_1_hat_1 = bridge_1_hat[ind_1]
+            # X0_0 = X[ind_0, :]
+            # bridge_1_hat_0 = bridge_1_hat[ind_0]
+
+            ind_d_ind = np.where(np.logical_and(G == 0, D == D_ind))[0]
+            X0_d_ind = X[ind_d_ind, :]
+            bridge_1_hat_d_ind = bridge_1_hat[ind_d_ind]
+
+            # if self.nn_2 == True:
+            #     B1_1 = X0_1
+            #     B1_0 = X0_0
+            # else:            
+            #     B1_1 = _transform_poly(X0_1, self.opts)
+            #     B1_0 = _transform_poly(X0_0, self.opts)
 
             if self.nn_2 == True:
-                B1_1 = X0_1
-                B1_0 = X0_0
+                B1_d_ind = X0_d_ind
             else:            
-                B1_1 = _transform_poly(X0_1, self.opts)
-                B1_0 = _transform_poly(X0_0, self.opts)
+                B1_d_ind = _transform_poly(X0_d_ind, self.opts)
 
+            # if self.fitargs2 is not None:
+            #     bridge_2_d1 = model_2_d1.fit(B1_1, B1_1, bridge_1_hat_1, **self.fitargs2)
+            #     bridge_2_d0 = model_2_d0.fit(B1_0, B1_0, bridge_1_hat_0, **self.fitargs2)
+            # else:
+            #     bridge_2_d1 = model_2_d1.fit(B1_1, B1_1, bridge_1_hat_1)
+            #     bridge_2_d0 = model_2_d0.fit(B1_0, B1_0, bridge_1_hat_0)
+            
             if self.fitargs2 is not None:
-                bridge_2_d1 = model_2_d1.fit(B1_1, B1_1, bridge_1_hat_1, **self.fitargs2)
-                bridge_2_d0 = model_2_d0.fit(B1_0, B1_0, bridge_1_hat_0, **self.fitargs2)
+                bridge_2_d_ind = model_2_d_ind.fit(B1_d_ind, B1_d_ind, bridge_1_hat_d_ind, **self.fitargs2)
             else:
-                bridge_2_d1 = model_2_d1.fit(B1_1, B1_1, bridge_1_hat_1)
-                bridge_2_d0 = model_2_d0.fit(B1_0, B1_0, bridge_1_hat_0)
+                bridge_2_d_ind = model_2_d_ind.fit(B1_d_ind, B1_d_ind, bridge_1_hat_d_ind)
 
         else:
-            bridge_2_d1 = None
-            bridge_2_d0 = None
+            bridge_2_d_ind = None
         
-        return bridge_1, bridge_2_d1, bridge_2_d0
+        # print("reached return")
+        return bridge_1, bridge_2_d_ind
+    
+    # # QUESTIONS
+    # """
+    # 1. Modify the two methods Isaac suggested nnpiv
+    # 2. Propensity score, modification not as straightfoward
+    # """
+    # def _compute_discrete_EY(self, Y, D, S, X, G, d_values):
+    #     E_Y_d = {}
+    #     for d in d_values:
+    #         # Filter data for the current treatment level
+    #         D_current = (D == d).astype(float)
+
+    #         # Fit the outcome model for the current treatment level
+    #         if self.longterm_model == 'latent_unconfounded':
+    #             bridge_1, bridge_2 = self._nnpivfit_outcome_latent(Y, D_current, S, X, G)
+    #         else:
+    #             bridge_1, bridge_2 = self._nnpivfit_outcome_surrogacy(Y, D_current, S, X, G)
+            
+    #         # Predict E{Y(d)} using the second-stage model
+    #         if self.nn_2:
+    #             A_test = torch.Tensor(X).to(device)
+    #             Y_pred = bridge_2.predict(A_test, model='avg').cpu().numpy()
+    #         else:
+    #             A_test = _transform_poly(X, self.opts)
+    #             Y_pred = bridge_2.predict(A_test)
+
+    #         # Take the mean prediction for E{Y(d)}
+    #         E_Y_d[d] = Y_pred.mean()
+    #     return E_Y_d
+
 
     def _propensity_score_latent(self, S_train, X_train, D_train, G_train,
                                  S_test, X_test):
@@ -578,7 +664,7 @@ class DML_longterm_seq:
         X_train : array-like
             Training covariates.
         D_train : array-like
-            Training treatment variable.
+            Training treatment variable. (here diff treatment variables, harder to modify this)
         G_train : array-like
             Training group indicator.
         S_test : array-like
@@ -652,88 +738,8 @@ class DML_longterm_seq:
 
         return pr_d1_g0_x.reshape(-1, 1), pr_g1_d1_sx.reshape(-1, 1), pr_g1_d0_sx.reshape(-1, 1), pr_g1_x.reshape(-1, 1), alfa
 
-    def _propensity_score_surrogacy(self, S_train, X_train, D_train, G_train,
-                                    S_test, X_test):
-        """
-        Estimate the propensity scores using the surrogacy framework.
 
-        This method is based on the model proposed in Athey, S., Chetty, R., Imbens, G., Kang, H., 2020b. Estimating treatment effects using multiple surrogates: the role of the surrogate score and the surrogate index. arXiv preprint arXiv:1603.09326.
-
-        Parameters
-        ----------
-        S_train : array-like
-            Training surrogate variable.
-        X_train : array-like
-            Training covariates.
-        D_train : array-like
-            Training treatment variable.
-        G_train : array-like
-            Training group indicator.
-        S_test : array-like
-            Testing surrogate variable.
-        X_test : array-like
-            Testing covariates.
-
-        Returns
-        -------
-        tuple
-            Estimated propensity scores and threshold alpha.
-        """
-        model_ps = copy.deepcopy(self.prop_score)
-        SX_train = np.column_stack((S_train, X_train))
-        ind = np.where(G_train == 0)[0]
-        X0_train = X_train[ind, :]
-        D0_train = D_train[ind]
-        SX0_train = SX_train[ind, :]
-
-        SX_test = np.column_stack((S_test, X_test))
-
-        # Surrogate score
-        model_ps.fit(SX0_train, D0_train.flatten())
-        pr_d1_g0_sx = model_ps.predict_proba(SX_test)[:, 1]
-        model_ps.fit(X0_train, D0_train.flatten())
-        pr_d1_g0_x = model_ps.predict_proba(X_test)[:, 1]
-
-        # Sampling score
-        model_ps.fit(SX_train, G_train.flatten())
-        pr_g1_sx = model_ps.predict_proba(SX_test)[:, 1]
-        model_ps.fit(X_train, G_train.flatten())
-        pr_g1_x = model_ps.predict_proba(X_test)[:, 1]
-
-        # Overlap assumption
-        pr_d1_g0_sx = np.where(pr_d1_g0_sx == 1, 0.99, pr_d1_g0_sx)
-        pr_d1_g0_sx = np.where(pr_d1_g0_sx == 0, 0.01, pr_d1_g0_sx)
-        pr_d1_g0_x = np.where(pr_d1_g0_x == 1, 0.99, pr_d1_g0_x)
-        pr_d1_g0_x = np.where(pr_d1_g0_x == 0, 0.01, pr_d1_g0_x)
-        pr_g1_sx = np.where(pr_g1_sx == 1, 0.99, pr_g1_sx)
-        pr_g1_sx = np.where(pr_g1_sx == 0, 0.01, pr_g1_sx)
-        pr_g1_x = np.where(pr_g1_x == 1, 0.99, pr_g1_x)
-        pr_g1_x = np.where(pr_g1_x == 0, 0.01, pr_g1_x)
-
-        if self.CHIM == True:
-            # Dropping observations with extreme values of the propensity score - CHIM (2009)
-            # One finds the smallest value of \alpha\in [0,0.5] s.t.
-            # $\lambda:=\frac{1}{\alpha(1-\alpha)}$
-            # $2\frac{\sum 1(g(X)\leq\lambda)*g(X)}{\sum 1(g(X)\leq\lambda)}-\lambda\geq 0$
-            # 
-            # Equivalently the first value of alpha (in increasing order) such that the constraint is achieved by equality
-            # (as the constraint is a monotone increasing function in alpha)
-
-            g_values = [1 / (pr_d1_g0_sx * (1 - pr_d1_g0_sx)), 1 / (pr_d1_g0_x * (1 - pr_d1_g0_x)), 1 / (pr_g1_sx * (1 - pr_g1_sx)), 1 / (pr_g1_x * (1 - pr_g1_x))]
-            optimized_alphas = []
-
-            for g in g_values:
-                def _objective_function(alpha):
-                    return _fun_threshold_alpha(alpha, g)
-                result = minimize_scalar(_objective_function, bounds=(0.001, 0.499))
-                optimized_alphas.append(result.x)
-            alfa = max(optimized_alphas)
-        else:
-            alfa = 0.0
-
-        return pr_d1_g0_sx.reshape(-1, 1), pr_d1_g0_x.reshape(-1, 1), pr_g1_sx.reshape(-1, 1), pr_g1_x.reshape(-1, 1), alfa
-
-    def _process_fold(self, fold_idx, train_data, test_data):
+    def _process_fold(self, fold_idx, train_data, test_data, d_discrete):
         """
         Process each fold in the K-fold cross-validation.
 
@@ -760,7 +766,8 @@ class DML_longterm_seq:
             train_V, test_V = train_data[5], test_data[5]
 
         if self.longterm_model == 'surrogacy':
-            delta_0, nu_1, nu_0 = self._nnpivfit_outcome_surrogacy(train_Y, train_D, train_S, train_X, train_G)
+            # IMPORTANT
+            delta_0, nu_d_discrete= self._nnpivfit_outcome_surrogacy(Y=train_Y, D=train_D, S=train_S, X=train_X, G=train_G, D_ind=d_discrete)
             
             # Evaluate the estimated moment functions using test_data
             if self.estimator == 'MR' or self.estimator == 'hybrid':
@@ -775,111 +782,37 @@ class DML_longterm_seq:
         else:
             delta_d1, delta_d0, nu_1, nu_0 = self._nnpivfit_outcome_latent(train_Y, train_D, train_S, train_X, train_G)
 
-            # Evaluate the estimated moment functions using test_data
-            if self.estimator == 'MR' or self.estimator == 'hybrid':
-                if self.nn_1 == True:
-                    test_S, test_X = tuple(map(lambda x: torch.Tensor(x), [test_S, test_X]))
-                    delta_d1_hat = delta_d1.predict(torch.cat((test_S, test_X), 1).to(device),
-                                                model='avg', burn_in=_get(self.opts, 'burnin', 0)).reshape(-1, 1)
-                    delta_d0_hat = delta_d0.predict(torch.cat((test_S, test_X), 1).to(device),
-                                                model='avg', burn_in=_get(self.opts, 'burnin', 0)).reshape(-1, 1)
-                else:
-                    delta_d1_hat = delta_d1.predict(_transform_poly(np.column_stack((test_S, test_X)), self.opts)).reshape(-1, 1)
-                    delta_d0_hat = delta_d0.predict(_transform_poly(np.column_stack((test_S, test_X)), self.opts)).reshape(-1, 1)
          
-        if self.estimator == 'MR' or self.estimator == 'OR':
+        # select the OR estimator, MR combines with the propensity score, but OR only uses the two outcome methods I will modify 
+        if self.estimator == 'MR' or self.estimator == 'OR': # multiple robust or outcome regression, this is how we combine the models
             if self.nn_2 == True:
                 test_X = torch.Tensor(test_X)
-                nu_1_hat = nu_1.predict(test_X.to(device),
-                                            model='avg', burn_in=_get(self.opts, 'burnin', 0)).reshape(-1, 1)
-                nu_0_hat = nu_0.predict(test_X.to(device),
-                                            model='avg', burn_in=_get(self.opts, 'burnin', 0)).reshape(-1, 1)
+                # nu_1_hat = nu_1.predict(test_X.to(device),
+                #                             model='avg', burn_in=_get(self.opts, 'burnin', 0)).reshape(-1, 1)
+                # nu_0_hat = nu_0.predict(test_X.to(device),
+                #                             model='avg', burn_in=_get(self.opts, 'burnin', 0)).reshape(-1, 1)
+
+                nu_d_discrete_hat = nu_d_discrete.predict(test_X.to(device),
+                                                          model='avg', burn_in=_get(self.opts, 'burnin', 0)).reshape(-1, 1)
             else:
-                nu_1_hat = nu_1.predict(_transform_poly(test_X, self.opts)).reshape(-1, 1)
-                nu_0_hat = nu_0.predict(_transform_poly(test_X, self.opts)).reshape(-1, 1)
+                # nu_1_hat = nu_1.predict(_transform_poly(test_X, self.opts)).reshape(-1, 1)
+                # nu_0_hat = nu_0.predict(_transform_poly(test_X, self.opts)).reshape(-1, 1)
 
-        if self.estimator == 'MR' or self.estimator == 'hybrid' or self.estimator == 'IPW':
-            # Obtain propensity score for action bridges
-            if self.longterm_model == 'surrogacy':
-                pr_d1_g0_sx, pr_d1_g0_x, pr_g1_sx, pr_g1_x, alfa = self._propensity_score_surrogacy(train_S, train_X, train_D, train_G, 
-                                                                  test_S, test_X)
-                mask = np.where((pr_d1_g0_sx >= alfa) & (pr_d1_g0_sx <= 1 - alfa) &
-                                (pr_d1_g0_x >= alfa) & (pr_d1_g0_x <= 1 - alfa) &
-                                (pr_g1_sx >= alfa) & (pr_g1_sx <= 1 - alfa) &
-                                (pr_g1_x >= alfa) & (pr_g1_x <= 1 - alfa))[0]
-                                
-                # IPW to residuals of approximation of first outcome bridge 
-                alfa_1_hat = (test_G * pr_d1_g0_sx * (1 - pr_g1_sx)) / (pr_g1_sx * pr_d1_g0_x * (1 - pr_g1_x))
-                alfa_0_hat = (test_G * (1 - pr_d1_g0_sx) * (1 - pr_g1_sx)) / (pr_g1_sx * (1 - pr_d1_g0_x) * (1 - pr_g1_x))
+                nu_d_discrete_hat = nu_d_discrete.predict(_transform_poly(test_X, self.opts)).reshape(-1, 1)
 
-                # IPW to residuals of approximation of second outcome bridge
-                eta_1_hat = ((1 - test_G) * test_D ) / (pr_d1_g0_x * (1 - pr_g1_x))
-                eta_0_hat = ((1 - test_G) * (1 - test_D) ) / ((1 - pr_d1_g0_x) * (1 - pr_g1_x))
-            else:
-                pr_d1_g0_x, pr_g1_d1_sx, pr_g1_d0_sx, pr_g1_x, alfa = self._propensity_score_latent(train_S, train_X, train_D, train_G,
-                                                                    test_S, test_X)
-                mask = np.where((pr_d1_g0_x >= alfa) & (pr_d1_g0_x <= 1 - alfa) &
-                                (pr_g1_d1_sx >= alfa) & (pr_g1_d1_sx <= 1 - alfa) &
-                                (pr_g1_d0_sx >= alfa) & (pr_g1_d0_sx <= 1 - alfa) &
-                                (pr_g1_x >= alfa) & (pr_g1_x <= 1 - alfa))[0]
-
-                # IPW to residuals of approximation of first outcome bridge
-                alfa_1_hat = (test_G * test_D * (1 - pr_g1_d1_sx)) / (pr_g1_d1_sx * pr_d1_g0_x * (1 - pr_g1_x))
-                alfa_0_hat = (test_G * (1 - test_D) * (1 - pr_g1_d0_sx)) / (pr_g1_d0_sx * (1 - pr_d1_g0_x) * (1 - pr_g1_x))
-
-                # IPW to residuals of approximation of second outcome bridge
-                eta_1_hat = ((1 - test_G) * test_D ) / (pr_d1_g0_x * (1 - pr_g1_x))
-                eta_0_hat = ((1 - test_G) * (1 - test_D) ) / ((1 - pr_d1_g0_x) * (1 - pr_g1_x))
-        
-        # Calculate the score function depending on the estimator
-        if self.estimator == 'MR':
-            y1_hat = nu_1_hat + alfa_1_hat * (test_Y - delta_d1_hat) + eta_1_hat * (delta_d1_hat - nu_1_hat)
-            y0_hat = nu_0_hat + alfa_0_hat * (test_Y - delta_d0_hat) + eta_0_hat * (delta_d0_hat - nu_0_hat)
-            psi_hat = y1_hat - y0_hat
-        if self.estimator == 'OR':
-            psi_hat = nu_1_hat - nu_0_hat 
-        if self.estimator == 'hybrid':
-            psi_hat = eta_1_hat * delta_d1_hat - eta_0_hat * delta_d0_hat
-        if self.estimator == 'IPW':
-            psi_hat = (alfa_1_hat - alfa_0_hat) * test_Y 
-
-        # Localization 
-        if self.V is not None:
-            if isinstance(self.bw_loc, str):
-                if self.bw_loc == 'silverman':
-                    IQR = np.percentile(train_V, 75, axis=0)-np.percentile(train_V, 25, axis=0)
-                    A = np.min([np.std(train_V, axis=0), IQR/1.349], axis=0)
-                    n = train_V.shape[0]
-                    bw = .9 * A * n ** (-0.2)
-                elif self.bw_loc == 'scott':
-                    A = np.std(train_V, axis=0)
-                    n = train_V.shape[0]
-                    bw = 1.059 * A * n ** (-0.2)
-            else:
-                if len(self.bw_loc)==1:
-                    bw = np.ones((train_V.shape[1]))*self.bw_loc[0]
-                else:
-                    if len(self.bw_loc)==train_V.shape[1]:
-                        bw = self.bw_loc
-                    else:
-                        warnings.warn(f"bw_loc has incorrect length. Using first element instead.", UserWarning)
-                        bw = np.ones((train_V.shape[1]))*self.bw_loc[0]
-
-            ell = [self._localization(test_V, v, bw) for v in self.v_values]
-            ell = np.column_stack(ell)
-
-            psi_hat = ell * psi_hat
-
-        if self.estimator == 'MR' or self.estimator == 'hybrid' or self.estimator == 'IPW':
-            psi_hat = psi_hat[mask]
-            
-        # Print progress bar using tqdm
         if self.verbose == True:
             self.progress_bar.update(1)
 
-        return psi_hat
+        return nu_d_discrete_hat
+    
+    # QUESTIONS
+    """
+    1. Difference between using neural net vs not using?
+    2. Is bridge 1 being used?
+    3. Should I make a new method?
+    """
 
-    def _split_and_estimate(self):
+    def _split_and_estimate(self, d_discrete):
         """
         Split the data into K folds and estimate the model.
 
@@ -904,22 +837,18 @@ class DML_longterm_seq:
                     delayed(self._process_fold)(
                         fold_idx, 
                         (self.Y[train_index], self.D[train_index], self.S[train_index], self.X[train_index], self.G[train_index]),
-                        (self.Y[test_index], self.D[test_index], self.S[test_index], self.X[test_index], self.G[test_index])) 
-                        for fold_idx, (train_index, test_index) in enumerate(kf.split(self.Y))
-                )
-            else:
-                fold_results = Parallel(n_jobs=-1, backend='threading')(
-                    delayed(self._process_fold)(
-                        fold_idx, 
-                        (self.Y[train_index], self.D[train_index], self.S[train_index], self.X[train_index], self.G[train_index], self.V[train_index]),
-                        (self.Y[test_index], self.D[test_index], self.S[test_index], self.X[test_index], self.G[test_index], self.V[test_index])) 
+                        (self.Y[test_index], self.D[test_index], self.S[test_index], self.X[test_index], self.G[test_index]),
+                        d_discrete=d_discrete) 
                         for fold_idx, (train_index, test_index) in enumerate(kf.split(self.Y))
                 )
             if self.verbose == True:       
                 self.progress_bar.close()
 
+            # result_arr.append(fold_results)
             # Calculate the average of psi_hat_array for each rep
+            
             psi_hat_array = np.concatenate(fold_results, axis=0)
+            print(f"psi_hat_array: {psi_hat_array}, shape: {psi_hat_array.shape}")
             theta_rep = np.mean(psi_hat_array, axis=0)
             theta_var_rep = np.var(psi_hat_array, axis=0, ddof=1)
             theta_cov_rep = np.cov(psi_hat_array, rowvar=False)
@@ -929,17 +858,30 @@ class DML_longterm_seq:
             theta_var.append(theta_var_rep)
             theta_cov.append(theta_cov_rep)
 
+        # return result_arr
+        #     # Calculate the average of psi_hat_array for each rep
+        #     psi_hat_array = np.concatenate(fold_results, axis=0)
+        #     theta_rep = np.mean(psi_hat_array, axis=0)
+        #     theta_var_rep = np.var(psi_hat_array, axis=0, ddof=1)
+        #     theta_cov_rep = np.cov(psi_hat_array, rowvar=False)
+
+        #     # Store results for each rep
+        #     theta.append(theta_rep)
+        #     theta_var.append(theta_var_rep)
+        #     theta_cov.append(theta_cov_rep)
+
         # Calculate the overall average of theta and theta_var
         theta_hat = np.mean(np.stack(theta, axis=0), axis=0)
         theta_var_hat = np.mean(np.stack(theta_var, axis=0), axis=0)
         theta_cov_hat = np.mean(np.stack(theta_cov, axis=0), axis=0)
         
-        # Calculate the confidence interval
+        print(f"theta_hat: {theta_hat}, theta_var_hat: {theta_var_hat}, theta_cov_hat: {theta_cov_hat}")
+        # # Calculate the confidence interval
         confidence_interval = self._calculate_confidence_interval(theta_hat, theta_var_hat, theta_cov_hat) 
 
-        return theta_hat, theta_var_hat, confidence_interval, theta_cov_hat
+        return theta_hat, theta_var_hat, theta_cov_hat, confidence_interval
 
-    def dml(self):
+    def dml(self, d_discrete):
         """
         Execute the debiased machine learning procedure.
 
@@ -948,8 +890,10 @@ class DML_longterm_seq:
         tuple
             Estimated treatment effect, variance, and confidence interval.
         """
-        theta, theta_var, confidence_interval, theta_cov_hat = self._split_and_estimate()
-        if self.V is None:
-            return theta[0], theta_var[0], confidence_interval[0]
-        else:
-            return theta, theta_cov_hat, confidence_interval
+        # theta, theta_var, confidence_interval, theta_cov_hat = self._split_and_estimate(d_discrete=d_discrete)
+        theta_hat, theta_var_hat, theta_cov_hat, confidence_interval = self._split_and_estimate(d_discrete=d_discrete)
+        return theta_hat[0], theta_var_hat, theta_cov_hat, confidence_interval
+        # if self.V is None:
+        #     return theta[0], theta_var[0], confidence_interval[0]
+        # else:
+        #     return theta, theta_cov_hat, confidence_interval
