@@ -288,7 +288,7 @@ class DML_longterm_seq:
                 warnings.warn(f"v_values is None. Computing localization around mean(V).", UserWarning)
                 self.v_values = np.mean(self.V, axis=0)    
 
-    def _calculate_confidence_interval(self, theta, theta_var, theta_cov):
+    def _calculate_confidence_interval(self, theta, theta_var, theta_cov, d_discrete):
         """
         Calculate the confidence interval for the given estimates.
 
@@ -306,7 +306,9 @@ class DML_longterm_seq:
         array-like
             Lower and upper bounds of the confidence intervals.
         """
-        n = self.Y.shape[0]
+        # n = self.Y.shape[0]
+        ind = np.where(self.D == d_discrete)[0]
+        n = self.Y[ind].shape[0]
         print(f"Calculating confidence intervals with n={n}, alpha={self.alpha}, ci_type={self.ci_type}")
         if self.ci_type == 'pointwise':
             z_alpha_half = norm.ppf(1 - self.alpha / 2)
@@ -809,7 +811,7 @@ class DML_longterm_seq:
         
         print(f"theta_hat: {theta_hat}, theta_var_hat: {theta_var_hat}, theta_cov_hat: {theta_cov_hat}")
         # # Calculate the confidence interval
-        confidence_interval = self._calculate_confidence_interval(theta_hat, theta_var_hat, theta_cov_hat) 
+        confidence_interval = self._calculate_confidence_interval(theta_hat, theta_var_hat, theta_cov_hat, d_discrete) 
 
         return theta_hat, theta_var_hat, theta_cov_hat, confidence_interval
 
