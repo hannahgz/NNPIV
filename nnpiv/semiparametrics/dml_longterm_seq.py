@@ -364,7 +364,7 @@ class DML_longterm_seq:
         ell = KK/omega
         return ell.reshape(-1,1)
 
-    def _nnpivfit_outcome_latent(self, Y, D, S, X, G):
+    def _nnpivfit_outcome_latent(self, Y, D, S, X, G, D_discrete):
         """
         Fit the outcome model using the latent unconfounded framework.
 
@@ -389,89 +389,117 @@ class DML_longterm_seq:
             Fitted models for treatment and control groups.
         """
         if self.estimator == 'MR' or self.estimator == 'OR' or self.estimator == 'hybrid':
-            model_1_d1 = copy.deepcopy(self.model1)
-            model_1_d0 = copy.deepcopy(self.model1)
-            model_2_d1 = copy.deepcopy(self.model2)
-            model_2_d0 = copy.deepcopy(self.model2)
+            # model_1_d1 = copy.deepcopy(self.model1)
+            # model_1_d0 = copy.deepcopy(self.model1)
+            # model_2_d1 = copy.deepcopy(self.model2)
+            # model_2_d0 = copy.deepcopy(self.model2)
+
+            model_1_d_discrete = copy.deepcopy(self.model1)
+            model_2_d_discrete = copy.deepcopy(self.model2)
 
             # First stage in observational data
             if self.nn_1 == True:
                 Y, D, S, X, G = map(lambda x: torch.Tensor(x), [Y, D, S, X, G]) 
 
-            ind = np.where(np.logical_and(G == 1, D == 1))[0]
-            S1_1 = S[ind]
-            X1_1 = X[ind, :]
-            Y1_1 = Y[ind]
+            # ind = np.where(np.logical_and(G == 1, D == 1))[0]
+            # S1_1 = S[ind]
+            # X1_1 = X[ind, :]
+            # Y1_1 = Y[ind]
 
-            ind = np.where(np.logical_and(G == 1, D == 0))[0]
-            S1_0 = S[ind]
-            X1_0 = X[ind, :]
-            Y1_0 = Y[ind]
+            # ind = np.where(np.logical_and(G == 1, D == 0))[0]
+            # S1_0 = S[ind]
+            # X1_0 = X[ind, :]
+            # Y1_0 = Y[ind]
 
+            ind = np.where(np.logical_and(G == 1, D == D_discrete))[0]
+            S1_d_discrete = S[ind]
+            X1_d_discrete = X[ind, :]
+            Y1_d_discrete = Y[ind]
+            print(f"S1_d_discrete shape: {S1_d_discrete.shape}, X1_d_discrete shape: {X1_d_discrete.shape}, Y1_d_discrete shape: {Y1_d_discrete.shape}")
             if self.nn_1 == True:
-                A1_1 = torch.cat((S1_1, X1_1), 1)
-                A1_0 = torch.cat((S1_0, X1_0), 1)
+                # A1_1 = torch.cat((S1_1, X1_1), 1)
+                # A1_0 = torch.cat((S1_0, X1_0), 1)
+                A1_d_discrete = torch.cat((S1_d_discrete, X1_d_discrete), 1)
             else:
-                A1_1 = _transform_poly(np.column_stack((S1_1, X1_1)), self.opts)
-                A1_0 = _transform_poly(np.column_stack((S1_0, X1_0)), self.opts)
+                # A1_1 = _transform_poly(np.column_stack((S1_1, X1_1)), self.opts)
+                # A1_0 = _transform_poly(np.column_stack((S1_0, X1_0)), self.opts)
+                A1_d_discrete = _transform_poly(np.column_stack((S1_d_discrete, X1_d_discrete)), self.opts)
 
             if self.fitargs1 is not None:
-                bridge_1_d1 = model_1_d1.fit(A1_1, A1_1, Y1_1, **self.fitargs1)
-                bridge_1_d0 = model_1_d0.fit(A1_0, A1_0, Y1_0, **self.fitargs1)
+                # bridge_1_d1 = model_1_d1.fit(A1_1, A1_1, Y1_1, **self.fitargs1)
+                # bridge_1_d0 = model_1_d0.fit(A1_0, A1_0, Y1_0, **self.fitargs1)
+                bridge_1_d_discrete = model_1_d_discrete.fit(A1_d_discrete, A1_d_discrete, Y1_d_discrete, **self.fitargs1)
             else:
-                bridge_1_d1 = model_1_d1.fit(A1_1, A1_1, Y1_1)
-                bridge_1_d0 = model_1_d0.fit(A1_0, A1_0, Y1_0)
+                # bridge_1_d1 = model_1_d1.fit(A1_1, A1_1, Y1_1)
+                # bridge_1_d0 = model_1_d0.fit(A1_0, A1_0, Y1_0)
+                bridge_1_d_discrete = model_1_d_discrete.fit(A1_d_discrete, A1_d_discrete, Y1_d_discrete)
 
             if self.nn_1 == True:
                 A1 = torch.cat((S, X), 1)
-                bridge_1_d1_hat = torch.Tensor(bridge_1_d1.predict(A1.to(device),
+                bridge_1_d_discrete_hat = torch.Tensor(bridge_1_d_discrete.predict(A1.to(device),
                             model='avg', burn_in=_get(self.opts, 'burnin', 0)))
-                bridge_1_d0_hat = torch.Tensor(bridge_1_d0.predict(A1.to(device),
-                            model='avg', burn_in=_get(self.opts, 'burnin', 0)))
+                # bridge_1_d1_hat = torch.Tensor(bridge_1_d1.predict(A1.to(device),
+                #             model='avg', burn_in=_get(self.opts, 'burnin', 0)))
+                # bridge_1_d0_hat = torch.Tensor(bridge_1_d0.predict(A1.to(device),
+                #             model='avg', burn_in=_get(self.opts, 'burnin', 0)))
             else:
                 A1 = _transform_poly(np.column_stack((S, X)), self.opts)
-                bridge_1_d1_hat = bridge_1_d1.predict(A1)
-                bridge_1_d1_hat = bridge_1_d1_hat.reshape(A1.shape[:1] + Y.shape[1:])
-                bridge_1_d0_hat = bridge_1_d0.predict(A1)
-                bridge_1_d0_hat = bridge_1_d0_hat.reshape(A1.shape[:1] + Y.shape[1:])
+                bridge_1_d_discrete_hat = bridge_1_d_discrete.predict(A1)
+                bridge_1_d_discrete_hat = bridge_1_d_discrete_hat.reshape(A1.shape[:1] + Y.shape[1:])
+                # bridge_1_d1_hat = bridge_1_d1.predict(A1)
+                # bridge_1_d1_hat = bridge_1_d1_hat.reshape(A1.shape[:1] + Y.shape[1:])
+                # bridge_1_d0_hat = bridge_1_d0.predict(A1)
+                # bridge_1_d0_hat = bridge_1_d0_hat.reshape(A1.shape[:1] + Y.shape[1:])
         else:
-            bridge_1_d1 = None
-            bridge_1_d0 = None
+            # bridge_1_d1 = None
+            # bridge_1_d0 = None
+            bridge_1_d_discrete = None
 
         if self.estimator == 'MR' or self.estimator == 'OR':
             # Second stage in experimental data
             if self.nn_1 != self.nn_2:
                 if self.nn_2 == False:
-                    D, X, G, bridge_1_d1_hat, bridge_1_d0_hat = map(lambda x: x.numpy(), [D, X, G, bridge_1_d1_hat, bridge_1_d0_hat])
+                    # D, X, G, bridge_1_d1_hat, bridge_1_d0_hat = map(lambda x: x.numpy(), [D, X, G, bridge_1_d1_hat, bridge_1_d0_hat])
+                    D, X, G, bridge_1_d_discrete_hat = map(lambda x: x.numpy(), [D, X, G, bridge_1_d_discrete_hat])
                 else:
-                    D, X, G, bridge_1_d1_hat, bridge_1_d0_hat = map(lambda x: torch.Tensor(x), [D, X, G, bridge_1_d1_hat, bridge_1_d0_hat])
+                    # D, X, G, bridge_1_d1_hat, bridge_1_d0_hat = map(lambda x: torch.Tensor(x), [D, X, G, bridge_1_d1_hat, bridge_1_d0_hat])
+                    D, X, G, bridge_1_d_discrete_hat = map(lambda x: torch.Tensor(x), [D, X, G, bridge_1_d_discrete_hat])
 
-            ind_1 = np.where(np.logical_and(G == 0, D == 1))[0]
-            ind_0 = np.where(np.logical_and(G == 0, D == 0))[0]
-            X0_1 = X[ind_1, :]
-            bridge_1_d1_hat = bridge_1_d1_hat[ind_1]
-            X0_0 = X[ind_0, :]
-            bridge_1_d0_hat = bridge_1_d0_hat[ind_0]
+            # ind_1 = np.where(np.logical_and(G == 0, D == 1))[0]
+            # ind_0 = np.where(np.logical_and(G == 0, D == 0))[0]
+            # X0_1 = X[ind_1, :]
+            # bridge_1_d1_hat = bridge_1_d1_hat[ind_1]
+            # X0_0 = X[ind_0, :]
+            # bridge_1_d0_hat = bridge_1_d0_hat[ind_0]
+            ind_d_discrete = np.where(np.logical_and(G == 0, D == D_discrete))[0]
+            X0_d_discrete = X[ind_d_discrete, :]
+            bridge_1_d_discrete_hat = bridge_1_d_discrete_hat[ind_d_discrete]
 
             if self.nn_2 == True:
-                B1_1 = X0_1
-                B1_0 = X0_0
+                # B1_1 = X0_1
+                # B1_0 = X0_0
+                B1_d_discrete = X0_d_discrete
             else:            
-                B1_1 = _transform_poly(X0_1, self.opts)
-                B1_0 = _transform_poly(X0_0, self.opts)
+                # B1_1 = _transform_poly(X0_1, self.opts)
+                # B1_0 = _transform_poly(X0_0, self.opts)
+                B1_d_discrete = _transform_poly(X0_d_discrete, self.opts)
 
             if self.fitargs2 is not None:
-                bridge_2_d1 = model_2_d1.fit(B1_1, B1_1, bridge_1_d1_hat, **self.fitargs2)
-                bridge_2_d0 = model_2_d0.fit(B1_0, B1_0, bridge_1_d0_hat, **self.fitargs2)
+                # bridge_2_d1 = model_2_d1.fit(B1_1, B1_1, bridge_1_d1_hat, **self.fitargs2)
+                # bridge_2_d0 = model_2_d0.fit(B1_0, B1_0, bridge_1_d0_hat, **self.fitargs2)
+                bridge_2_d_discrete = model_2_d_discrete.fit(B1_d_discrete, B1_d_discrete, bridge_1_d_discrete_hat, **self.fitargs2)
             else:
-                bridge_2_d1 = model_2_d1.fit(B1_1, B1_1, bridge_1_d1_hat)
-                bridge_2_d0 = model_2_d0.fit(B1_0, B1_0, bridge_1_d0_hat)
+                # bridge_2_d1 = model_2_d1.fit(B1_1, B1_1, bridge_1_d1_hat)
+                # bridge_2_d0 = model_2_d0.fit(B1_0, B1_0, bridge_1_d0_hat)
+                bridge_2_d_discrete = model_2_d_discrete.fit(B1_d_discrete, B1_d_discrete, bridge_1_d_discrete_hat)
 
         else:
-            bridge_2_d1 = None
-            bridge_2_d0 = None
+            # bridge_2_d1 = None
+            # bridge_2_d0 = None
+            bridge_2_d_discrete = None
         
-        return bridge_1_d1, bridge_1_d0, bridge_2_d1, bridge_2_d0
+        # return bridge_1_d1, bridge_1_d0, bridge_2_d1, bridge_2_d0
+        return bridge_1_d_discrete, bridge_2_d_discrete
 
     def _nnpivfit_outcome_surrogacy(self, Y, D, S, X, G, D_ind):
         """
@@ -795,9 +823,9 @@ class DML_longterm_seq:
                     delta_d0_hat = delta_0.predict(_transform_poly(np.column_stack((test_S, test_X)), self.opts)).reshape(-1, 1)
                     delta_d1_hat = delta_d0_hat
         else:
-            delta_d1, delta_d0, nu_1, nu_0 = self._nnpivfit_outcome_latent(train_Y, train_D, train_S, train_X, train_G)
+            # delta_d1, delta_d0, nu_1, nu_0 = self._nnpivfit_outcome_latent(train_Y, train_D, train_S, train_X, train_G)
+            delta_d_discrete, nu_d_discrete = self._nnpivfit_outcome_latent(train_Y, train_D, train_S, train_X, train_G, D_discrete=d_discrete)
 
-         
         # select the OR estimator, MR combines with the propensity score, but OR only uses the two outcome methods I will modify 
         if self.estimator == 'MR' or self.estimator == 'OR': # multiple robust or outcome regression, this is how we combine the models
             if self.nn_2 == True:
