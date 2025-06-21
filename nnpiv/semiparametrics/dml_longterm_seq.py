@@ -138,7 +138,7 @@ class DML_longterm_seq:
     X1 : array-like, optional
         Additional covariates.
     V : array-like, optional
-        Localization covariates. (you have overall treatment effect, can further partition this effect into effect by covariates, partition treatment effect into age groups, instead of subsamples, kernel around age that you're interested in, like a weighting variable)
+        Localization covariates.
     v_values : array-like, optional
         Values for localization.
     ci_type : str, optional
@@ -190,11 +190,11 @@ class DML_longterm_seq:
                  longterm_model='surrogacy',
                  model1=ApproxRKHSIVCV(kernel_approx='nystrom', n_components=100,
                            kernel='rbf', gamma=.1, delta_scale='auto',
-                           delta_exp=.4, alpha_scales=np.geomspace(1, 10000, 10), cv=5), # observational, to test code, use a linear regression instead from skicit learn so it'll go a lot faster
+                           delta_exp=.4, alpha_scales=np.geomspace(1, 10000, 10), cv=5),
                  nn_1=False,
                  model2=ApproxRKHSIVCV(kernel_approx='nystrom', n_components=100,
                            kernel='rbf', gamma=.1, delta_scale='auto',
-                           delta_exp=.4, alpha_scales=np.geomspace(1, 10000, 10), cv=5), #experimental
+                           delta_exp=.4, alpha_scales=np.geomspace(1, 10000, 10), cv=5),
                  nn_2=False,
                  alpha=0.05,
                  n_folds=5,
@@ -363,7 +363,7 @@ class DML_longterm_seq:
         omega = np.mean(KK,axis=0)   
         ell = KK/omega
         return ell.reshape(-1,1)
-    
+
     def _nnpivfit_outcome_latent(self, Y, D, S, X, G):
         """
         Fit the outcome model using the latent unconfounded framework.
@@ -499,7 +499,6 @@ class DML_longterm_seq:
         tuple
             Fitted models for the outcome.
         """
-        # print("Fitting outcome model with surrogacy assumption...")
         if self.estimator == 'MR' or self.estimator == 'OR' or self.estimator == 'hybrid':
             model_1 = copy.deepcopy(self.model1)
             model_2_d_ind = copy.deepcopy(self.model2)
@@ -520,7 +519,7 @@ class DML_longterm_seq:
             else:
                 # print("Transforming data with polynomial features...")
                 A1 = _transform_poly(np.column_stack((S1, X1)), self.opts)
-            
+
             if self.fitargs1 is not None:
                 bridge_1 = model_1.fit(A1, A1, Y1, **self.fitargs1)
             else:
@@ -600,7 +599,7 @@ class DML_longterm_seq:
         X_train : array-like
             Training covariates.
         D_train : array-like
-            Training treatment variable. (here diff treatment variables, harder to modify this)
+            Training treatment variable.
         G_train : array-like
             Training group indicator.
         S_test : array-like
@@ -754,7 +753,7 @@ class DML_longterm_seq:
             alfa = 0.0
 
         return pr_d1_g0_sx.reshape(-1, 1), pr_d1_g0_x.reshape(-1, 1), pr_g1_sx.reshape(-1, 1), pr_g1_x.reshape(-1, 1), alfa
-    
+
     def _process_fold(self, fold_idx, train_data, test_data, d_discrete):
         """
         Process each fold in the K-fold cross-validation.
