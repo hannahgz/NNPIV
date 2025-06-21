@@ -306,9 +306,10 @@ class DML_longterm_seq:
         array-like
             Lower and upper bounds of the confidence intervals.
         """
-        # n = self.Y.shape[0]
-        ind = np.where(self.D == d_discrete)[0]
-        n = self.Y[ind].shape[0]
+        # TODO: consider sample size?
+        n = self.Y.shape[0]
+        # ind = np.where(self.D == d_discrete)[0]
+        # n = self.Y[ind].shape[0]
         print(f"Calculating confidence intervals with n={n}, alpha={self.alpha}, ci_type={self.ci_type}")
         if self.ci_type == 'pointwise':
             z_alpha_half = norm.ppf(1 - self.alpha / 2)
@@ -509,14 +510,10 @@ class DML_longterm_seq:
             if self.nn_1 == True:
                 Y, D, S, X, G = map(lambda x: torch.Tensor(x), [Y, D, S, X, G]) 
 
-            # print("Fitting first stage model...")
-            # ind = np.where(G == 1)[0]
-            ind = np.where((G == 1) & (D == D_ind))[0]
-            # print(f"Shape of S: {S.shape}, X: {X.shape}, Y: {Y.shape}, G: {G.shape}")
+            ind = np.where(G == 1)[0]
             S1 = S[ind]
             X1 = X[ind, :]
             Y1 = Y[ind]
-            print(f"Shape of S1: {S1.shape}, X1: {X1.shape}, Y1: {Y1.shape}")
 
             if self.nn_1 == True:
                 A1 = torch.cat((S1, X1), 1)
@@ -586,7 +583,6 @@ class DML_longterm_seq:
         else:
             bridge_2_d_ind = None
         
-        # print("reached return")
         return bridge_1, bridge_2_d_ind
 
 
@@ -778,31 +774,17 @@ class DML_longterm_seq:
             if self.verbose == True:       
                 self.progress_bar.close()
 
-            # result_arr.append(fold_results)
-            # Calculate the average of psi_hat_array for each rep
-            
+            # Calculate the average of psi_hat_array for each rep            
             psi_hat_array = np.concatenate(fold_results, axis=0)
-            print(f"psi_hat_array: {psi_hat_array}, shape: {psi_hat_array.shape}")
             theta_rep = np.mean(psi_hat_array, axis=0)
             theta_var_rep = np.var(psi_hat_array, axis=0, ddof=1)
             theta_cov_rep = np.cov(psi_hat_array, rowvar=False)
+            print(f"psi_hat_array shape: {psi_hat_array.shape}")
 
             # Store results for each rep
             theta.append(theta_rep)
             theta_var.append(theta_var_rep)
             theta_cov.append(theta_cov_rep)
-
-        # return result_arr
-        #     # Calculate the average of psi_hat_array for each rep
-        #     psi_hat_array = np.concatenate(fold_results, axis=0)
-        #     theta_rep = np.mean(psi_hat_array, axis=0)
-        #     theta_var_rep = np.var(psi_hat_array, axis=0, ddof=1)
-        #     theta_cov_rep = np.cov(psi_hat_array, rowvar=False)
-
-        #     # Store results for each rep
-        #     theta.append(theta_rep)
-        #     theta_var.append(theta_var_rep)
-        #     theta_cov.append(theta_cov_rep)
 
         # Calculate the overall average of theta and theta_var
         theta_hat = np.mean(np.stack(theta, axis=0), axis=0)
@@ -810,7 +792,7 @@ class DML_longterm_seq:
         theta_cov_hat = np.mean(np.stack(theta_cov, axis=0), axis=0)
         
         print(f"theta_hat: {theta_hat}, theta_var_hat: {theta_var_hat}, theta_cov_hat: {theta_cov_hat}")
-        # # Calculate the confidence interval
+        # Calculate the confidence interval
         confidence_interval = self._calculate_confidence_interval(theta_hat, theta_var_hat, theta_cov_hat, d_discrete) 
 
         return theta_hat, theta_var_hat, theta_cov_hat, confidence_interval
