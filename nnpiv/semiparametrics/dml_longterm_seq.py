@@ -674,7 +674,87 @@ class DML_longterm_seq:
 
         return pr_d1_g0_x.reshape(-1, 1), pr_g1_d1_sx.reshape(-1, 1), pr_g1_d0_sx.reshape(-1, 1), pr_g1_x.reshape(-1, 1), alfa
 
+    def _propensity_score_surrogacy(self, S_train, X_train, D_train, G_train,
+                                    S_test, X_test):
+        """
+        Estimate the propensity scores using the surrogacy framework.
 
+        This method is based on the model proposed in Athey, S., Chetty, R., Imbens, G., Kang, H., 2020b. Estimating treatment effects using multiple surrogates: the role of the surrogate score and the surrogate index. arXiv preprint arXiv:1603.09326.
+
+        Parameters
+        ----------
+        S_train : array-like
+            Training surrogate variable.
+        X_train : array-like
+            Training covariates.
+        D_train : array-like
+            Training treatment variable.
+        G_train : array-like
+            Training group indicator.
+        S_test : array-like
+            Testing surrogate variable.
+        X_test : array-like
+            Testing covariates.
+
+        Returns
+        -------
+        tuple
+            Estimated propensity scores and threshold alpha.
+        """
+        model_ps = copy.deepcopy(self.prop_score)
+        SX_train = np.column_stack((S_train, X_train))
+        ind = np.where(G_train == 0)[0]
+        X0_train = X_train[ind, :]
+        D0_train = D_train[ind]
+        SX0_train = SX_train[ind, :]
+
+        SX_test = np.column_stack((S_test, X_test))
+
+        # Surrogate score
+        model_ps.fit(SX0_train, D0_train.flatten())
+        pr_d1_g0_sx = model_ps.predict_proba(SX_test)[:, 1]
+        model_ps.fit(X0_train, D0_train.flatten())
+        pr_d1_g0_x = model_ps.predict_proba(X_test)[:, 1]
+
+        # Sampling score
+        model_ps.fit(SX_train, G_train.flatten())
+        pr_g1_sx = model_ps.predict_proba(SX_test)[:, 1]
+        model_ps.fit(X_train, G_train.flatten())
+        pr_g1_x = model_ps.predict_proba(X_test)[:, 1]
+
+        # Overlap assumption
+        pr_d1_g0_sx = np.where(pr_d1_g0_sx == 1, 0.99, pr_d1_g0_sx)
+        pr_d1_g0_sx = np.where(pr_d1_g0_sx == 0, 0.01, pr_d1_g0_sx)
+        pr_d1_g0_x = np.where(pr_d1_g0_x == 1, 0.99, pr_d1_g0_x)
+        pr_d1_g0_x = np.where(pr_d1_g0_x == 0, 0.01, pr_d1_g0_x)
+        pr_g1_sx = np.where(pr_g1_sx == 1, 0.99, pr_g1_sx)
+        pr_g1_sx = np.where(pr_g1_sx == 0, 0.01, pr_g1_sx)
+        pr_g1_x = np.where(pr_g1_x == 1, 0.99, pr_g1_x)
+        pr_g1_x = np.where(pr_g1_x == 0, 0.01, pr_g1_x)
+
+        if self.CHIM == True:
+            # Dropping observations with extreme values of the propensity score - CHIM (2009)
+            # One finds the smallest value of \alpha\in [0,0.5] s.t.
+            # $\lambda:=\frac{1}{\alpha(1-\alpha)}$
+            # $2\frac{\sum 1(g(X)\leq\lambda)*g(X)}{\sum 1(g(X)\leq\lambda)}-\lambda\geq 0$
+            # 
+            # Equivalently the first value of alpha (in increasing order) such that the constraint is achieved by equality
+            # (as the constraint is a monotone increasing function in alpha)
+
+            g_values = [1 / (pr_d1_g0_sx * (1 - pr_d1_g0_sx)), 1 / (pr_d1_g0_x * (1 - pr_d1_g0_x)), 1 / (pr_g1_sx * (1 - pr_g1_sx)), 1 / (pr_g1_x * (1 - pr_g1_x))]
+            optimized_alphas = []
+
+            for g in g_values:
+                def _objective_function(alpha):
+                    return _fun_threshold_alpha(alpha, g)
+                result = minimize_scalar(_objective_function, bounds=(0.001, 0.499))
+                optimized_alphas.append(result.x)
+            alfa = max(optimized_alphas)
+        else:
+            alfa = 0.0
+
+        return pr_d1_g0_sx.reshape(-1, 1), pr_d1_g0_x.reshape(-1, 1), pr_g1_sx.reshape(-1, 1), pr_g1_x.reshape(-1, 1), alfa
+    
     def _process_fold(self, fold_idx, train_data, test_data, d_discrete):
         """
         Process each fold in the K-fold cross-validation.
@@ -735,12 +815,88 @@ class DML_longterm_seq:
                 # nu_0_hat = nu_0.predict(_transform_poly(test_X, self.opts)).reshape(-1, 1)
 
                 nu_d_discrete_hat = nu_d_discrete.predict(_transform_poly(test_X, self.opts)).reshape(-1, 1)
+        if self.estimator == 'MR' or self.estimator == 'hybrid' or self.estimator == 'IPW':
+            # Obtain propensity score for action bridges
+            if self.longterm_model == 'surrogacy':
+                pr_d1_g0_sx, pr_d1_g0_x, pr_g1_sx, pr_g1_x, alfa = self._propensity_score_surrogacy(train_S, train_X, train_D, train_G, 
+                                                                  test_S, test_X)
+                mask = np.where((pr_d1_g0_sx >= alfa) & (pr_d1_g0_sx <= 1 - alfa) &
+                                (pr_d1_g0_x >= alfa) & (pr_d1_g0_x <= 1 - alfa) &
+                                (pr_g1_sx >= alfa) & (pr_g1_sx <= 1 - alfa) &
+                                (pr_g1_x >= alfa) & (pr_g1_x <= 1 - alfa))[0]
+                                
+                # IPW to residuals of approximation of first outcome bridge 
+                alfa_1_hat = (test_G * pr_d1_g0_sx * (1 - pr_g1_sx)) / (pr_g1_sx * pr_d1_g0_x * (1 - pr_g1_x))
+                alfa_0_hat = (test_G * (1 - pr_d1_g0_sx) * (1 - pr_g1_sx)) / (pr_g1_sx * (1 - pr_d1_g0_x) * (1 - pr_g1_x))
 
+                # IPW to residuals of approximation of second outcome bridge
+                eta_1_hat = ((1 - test_G) * test_D ) / (pr_d1_g0_x * (1 - pr_g1_x))
+                eta_0_hat = ((1 - test_G) * (1 - test_D) ) / ((1 - pr_d1_g0_x) * (1 - pr_g1_x))
+            else:
+                pr_d1_g0_x, pr_g1_d1_sx, pr_g1_d0_sx, pr_g1_x, alfa = self._propensity_score_latent(train_S, train_X, train_D, train_G,
+                                                                    test_S, test_X)
+                mask = np.where((pr_d1_g0_x >= alfa) & (pr_d1_g0_x <= 1 - alfa) &
+                                (pr_g1_d1_sx >= alfa) & (pr_g1_d1_sx <= 1 - alfa) &
+                                (pr_g1_d0_sx >= alfa) & (pr_g1_d0_sx <= 1 - alfa) &
+                                (pr_g1_x >= alfa) & (pr_g1_x <= 1 - alfa))[0]
+
+                # IPW to residuals of approximation of first outcome bridge
+                alfa_1_hat = (test_G * test_D * (1 - pr_g1_d1_sx)) / (pr_g1_d1_sx * pr_d1_g0_x * (1 - pr_g1_x))
+                alfa_0_hat = (test_G * (1 - test_D) * (1 - pr_g1_d0_sx)) / (pr_g1_d0_sx * (1 - pr_d1_g0_x) * (1 - pr_g1_x))
+
+                # IPW to residuals of approximation of second outcome bridge
+                eta_1_hat = ((1 - test_G) * test_D ) / (pr_d1_g0_x * (1 - pr_g1_x))
+                eta_0_hat = ((1 - test_G) * (1 - test_D) ) / ((1 - pr_d1_g0_x) * (1 - pr_g1_x))
+        
+        # Calculate the score function depending on the estimator
+        if self.estimator == 'MR':
+            #TODO: Implement the MR estimator score function, (incorporates propensity score)
+            print(f"NOT IMPLEMENTED: Calculating score function for MR estimator...")
+            # y1_hat = nu_1_hat + alfa_1_hat * (test_Y - delta_d1_hat) + eta_1_hat * (delta_d1_hat - nu_1_hat)
+            # y0_hat = nu_0_hat + alfa_0_hat * (test_Y - delta_d0_hat) + eta_0_hat * (delta_d0_hat - nu_0_hat)
+            # psi_hat = y1_hat - y0_hat
+        if self.estimator == 'OR':
+            psi_hat = nu_d_discrete_hat
+        if self.estimator == 'hybrid':
+            psi_hat = eta_1_hat * delta_d1_hat - eta_0_hat * delta_d0_hat
+        if self.estimator == 'IPW':
+            psi_hat = (alfa_1_hat - alfa_0_hat) * test_Y 
+
+        # Localization 
+        if self.V is not None:
+            if isinstance(self.bw_loc, str):
+                if self.bw_loc == 'silverman':
+                    IQR = np.percentile(train_V, 75, axis=0)-np.percentile(train_V, 25, axis=0)
+                    A = np.min([np.std(train_V, axis=0), IQR/1.349], axis=0)
+                    n = train_V.shape[0]
+                    bw = .9 * A * n ** (-0.2)
+                elif self.bw_loc == 'scott':
+                    A = np.std(train_V, axis=0)
+                    n = train_V.shape[0]
+                    bw = 1.059 * A * n ** (-0.2)
+            else:
+                if len(self.bw_loc)==1:
+                    bw = np.ones((train_V.shape[1]))*self.bw_loc[0]
+                else:
+                    if len(self.bw_loc)==train_V.shape[1]:
+                        bw = self.bw_loc
+                    else:
+                        warnings.warn(f"bw_loc has incorrect length. Using first element instead.", UserWarning)
+                        bw = np.ones((train_V.shape[1]))*self.bw_loc[0]
+
+            ell = [self._localization(test_V, v, bw) for v in self.v_values]
+            ell = np.column_stack(ell)
+
+            psi_hat = ell * psi_hat
+
+        if self.estimator == 'MR' or self.estimator == 'hybrid' or self.estimator == 'IPW':
+            psi_hat = psi_hat[mask]
+            
+        # Print progress bar using tqdm
         if self.verbose == True:
             self.progress_bar.update(1)
 
-        return nu_d_discrete_hat
-
+        return psi_hat
 
     def _split_and_estimate(self, d_discrete):
         """
@@ -774,7 +930,7 @@ class DML_longterm_seq:
             if self.verbose == True:       
                 self.progress_bar.close()
 
-            # Calculate the average of psi_hat_array for each rep            
+            # Calculate the average of psi_hat_array for each rep
             psi_hat_array = np.concatenate(fold_results, axis=0)
             theta_rep = np.mean(psi_hat_array, axis=0)
             theta_var_rep = np.var(psi_hat_array, axis=0, ddof=1)
